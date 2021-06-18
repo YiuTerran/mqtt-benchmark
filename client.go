@@ -2,8 +2,9 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
-	"log"
+	"math"
 	"time"
 
 	"github.com/GaryBoone/GoStats/stats"
@@ -24,130 +25,124 @@ type Client struct {
 	Quiet       bool
 	WaitTimeout time.Duration
 	TLSConfig   *tls.Config
+
+	client mqtt.Client
 }
 
-// Run runs benchmark tests and writes results in the provided channel
-func (c *Client) Run(res chan *RunResults) {
-	newMsgs := make(chan *Message)
-	pubMsgs := make(chan *Message)
-	doneGen := make(chan bool)
-	donePub := make(chan bool)
-	runResults := new(RunResults)
-
-	started := time.Now()
-	// start generator
-	go c.genMessages(newMsgs, doneGen)
-	// start publisher
-	go c.pubMessages(newMsgs, pubMsgs, doneGen, donePub)
-
-	runResults.ID = c.ID
-	times := []float64{}
-	for {
-		select {
-		case m := <-pubMsgs:
-			if m.Error {
-				log.Printf("CLIENT %v ERROR publishing message: %v: at %v\n", c.ID, m.Topic, m.Sent.Unix())
-				runResults.Failures++
-			} else {
-				// log.Printf("Message published: %v: sent: %v delivered: %v flight time: %v\n", m.Topic, m.Sent, m.Delivered, m.Delivered.Sub(m.Sent))
-				runResults.Successes++
-				times = append(times, m.Delivered.Sub(m.Sent).Seconds()*1000) // in milliseconds
-			}
-		case <-donePub:
-			// calculate results
-			duration := time.Now().Sub(started)
-			runResults.MsgTimeMin = stats.StatsMin(times)
-			runResults.MsgTimeMax = stats.StatsMax(times)
-			runResults.MsgTimeMean = stats.StatsMean(times)
-			runResults.RunTime = duration.Seconds()
-			runResults.MsgsPerSec = float64(runResults.Successes) / duration.Seconds()
-			// calculate std if sample is > 1, otherwise leave as 0 (convention)
-			if c.MsgCount > 1 {
-				runResults.MsgTimeStd = stats.StatsSampleStandardDeviation(times)
-			}
-
-			// report results and exit
-			res <- runResults
-			return
-		}
-	}
-}
-
-func (c *Client) genMessages(ch chan *Message, done chan bool) {
-	for i := 0; i < c.MsgCount; i++ {
-		ch <- &Message{
-			Topic:   c.MsgTopic,
-			QoS:     c.MsgQoS,
-			Payload: make([]byte, c.MsgSize),
-		}
-	}
-	done <- true
-	// log.Printf("CLIENT %v is done generating messages\n", c.ID)
-	return
-}
-
-func (c *Client) pubMessages(in, out chan *Message, doneGen, donePub chan bool) {
-	onConnected := func(client mqtt.Client) {
-		if !c.Quiet {
-			log.Printf("CLIENT %v is connected to the broker %v\n", c.ID, c.BrokerURL)
-		}
-		ctr := 0
-		for {
-			select {
-			case m := <-in:
-				m.Sent = time.Now()
-				token := client.Publish(m.Topic, m.QoS, false, m.Payload)
-				res := token.WaitTimeout(c.WaitTimeout)
-				if !res {
-					log.Printf("CLIENT %v Timeout sending message: %v\n", c.ID, token.Error())
-					m.Error = true
-				} else if token.Error() != nil {
-					log.Printf("CLIENT %v Error sending message: %v\n", c.ID, token.Error())
-					m.Error = true
-				} else {
-					m.Delivered = time.Now()
-					m.Error = false
-				}
-				out <- m
-
-				if ctr > 0 && ctr%100 == 0 {
-					if !c.Quiet {
-						log.Printf("CLIENT %v published %v messages and keeps publishing...\n", c.ID, ctr)
-					}
-				}
-				ctr++
-			case <-doneGen:
-				donePub <- true
-				if !c.Quiet {
-					log.Printf("CLIENT %v is done publishing\n", c.ID)
-				}
-				return
-			}
-		}
-	}
-
+//Conn 将建立连接单独剥离出来，计算连接数均值
+func (c *Client) Conn(result chan ConnResult) {
 	opts := mqtt.NewClientOptions().
+		SetProtocolVersion(4).
 		AddBroker(c.BrokerURL).
 		SetClientID(fmt.Sprintf("%s-%v", c.ClientID, c.ID)).
 		SetCleanSession(true).
-		SetAutoReconnect(true).
-		SetOnConnectHandler(onConnected).
-		SetConnectionLostHandler(func(client mqtt.Client, reason error) {
-			log.Printf("CLIENT %v lost connection to the broker: %v. Will reconnect...\n", c.ID, reason.Error())
-		})
-	if c.BrokerUser != "" && c.BrokerPass != "" {
+		SetAutoReconnect(false).
+		SetConnectTimeout(5 * time.Second)
+	if c.BrokerUser != "" || c.BrokerPass != "" {
 		opts.SetUsername(c.BrokerUser)
 		opts.SetPassword(c.BrokerPass)
 	}
 	if c.TLSConfig != nil {
 		opts.SetTLSConfig(c.TLSConfig)
 	}
-
 	client := mqtt.NewClient(opts)
-	token := client.Connect()
-	token.Wait()
+	ok := client.Connect().Wait()
+	r := ConnResult{
+		Client: c,
+		OK:     ok,
+	}
+	if ok {
+		c.client = client
+		r.ConnAt = time.Now()
+		fmt.Printf("client %v conn\n", c.ID)
+	} else {
+		fmt.Printf("client %v fail to conn\n", c.ID)
+	}
+	result <- r
+}
 
-	if token.Error() != nil {
-		log.Printf("CLIENT %v had error connecting to the broker: %v\n", c.ID, token.Error())
+// Run runs benchmark tests and writes results in the provided channel
+func (c *Client) Run(res chan *RunResults) {
+	newMsgs := make(chan *Message)
+	pubMsgs := make(chan *Message)
+	runResults := new(RunResults)
+
+	started := time.Now()
+	// start generator
+	go c.genMessages(newMsgs)
+	// start publisher
+	go c.pubMessages(newMsgs, pubMsgs)
+
+	runResults.ID = c.ID
+	var times []float64
+	for m := range pubMsgs {
+		if m == nil {
+			//完成了，统计
+			duration := time.Now().Sub(started)
+			runResults.MsgTimeMin = stats.StatsMin(times)
+			runResults.MsgTimeMax = stats.StatsMax(times)
+			runResults.MsgTimeMean = stats.StatsMean(times)
+			runResults.RunTime = duration.Seconds()
+			runResults.MsgsPerSec = float64(runResults.Successes) / duration.Seconds()
+			res <- runResults
+			c.client.Disconnect(100)
+			return
+		}
+		if m.Error {
+			runResults.Failures++
+		} else {
+			runResults.Successes++
+			f := m.Delivered.Sub(m.Sent).Seconds() * 1000
+			if f <= 0 || math.IsNaN(f) {
+				f = 1
+			}
+			times = append(times, f)
+		}
+	}
+}
+
+type payload struct {
+	CreateAt int64  `json:"create_at"`
+	Data     []byte `json:"data"`
+}
+
+func genPayload() []byte {
+	p := payload{
+		CreateAt: time.Now().UnixNano() / 1e6,
+		Data:     make([]byte, 1024),
+	}
+	bs, _ := json.Marshal(p)
+	return bs
+}
+
+func (c *Client) genMessages(ch chan *Message) {
+	for i := 0; i < c.MsgCount; i++ {
+		ch <- &Message{
+			Topic:   c.MsgTopic,
+			QoS:     c.MsgQoS,
+			Payload: genPayload(),
+		}
+	}
+	//nil表示生成完毕
+	ch <- nil
+}
+
+func (c *Client) pubMessages(in, out chan *Message) {
+	for m := range in {
+		if m == nil {
+			out <- nil
+			return
+		}
+		m.Sent = time.Now()
+		token := c.client.Publish(m.Topic, m.QoS, false, m.Payload)
+		//这个间隔是最大间隔，而不是标准间隔
+		res := token.WaitTimeout(c.WaitTimeout)
+		if !res || token.Error() != nil {
+			m.Error = true
+		} else {
+			m.Delivered = time.Now()
+			m.Error = false
+		}
+		out <- m
 	}
 }
