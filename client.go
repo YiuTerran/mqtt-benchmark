@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/GaryBoone/GoStats/stats"
@@ -75,9 +74,18 @@ func (c *Client) Run(res chan *RunResults) {
 
 	runResults.ID = c.ID
 	var times []float64
+	var count int
 	for m := range pubMsgs {
-		if m == nil {
-			//完成了，统计
+		count++
+		if m.Error {
+			runResults.Failures++
+		} else {
+			runResults.Successes++
+			f := m.Delivered.Sub(m.Sent).Seconds() * 1000
+			times = append(times, f)
+		}
+		//完成了，统计
+		if count == c.MsgCount {
 			duration := time.Now().Sub(started)
 			runResults.MsgTimeMin = stats.StatsMin(times)
 			runResults.MsgTimeMax = stats.StatsMax(times)
@@ -87,16 +95,6 @@ func (c *Client) Run(res chan *RunResults) {
 			res <- runResults
 			c.client.Disconnect(100)
 			return
-		}
-		if m.Error {
-			runResults.Failures++
-		} else {
-			runResults.Successes++
-			f := m.Delivered.Sub(m.Sent).Seconds() * 1000
-			if f <= 0 || math.IsNaN(f) {
-				f = 1
-			}
-			times = append(times, f)
 		}
 	}
 }
@@ -127,22 +125,25 @@ func (c *Client) genMessages(ch chan *Message) {
 	ch <- nil
 }
 
+func waitResult(token mqtt.Token, m *Message, out chan *Message) {
+	ok := token.Wait()
+	if !ok || token.Error() != nil {
+		m.Error = true
+	} else {
+		m.Delivered = time.Now()
+		m.Error = false
+	}
+	out <- m
+}
+
 func (c *Client) pubMessages(in, out chan *Message) {
 	for m := range in {
 		if m == nil {
-			out <- nil
 			return
 		}
 		m.Sent = time.Now()
 		token := c.client.Publish(m.Topic, m.QoS, false, m.Payload)
-		//这个间隔是最大间隔，而不是标准间隔
-		res := token.WaitTimeout(c.WaitTimeout)
-		if !res || token.Error() != nil {
-			m.Error = true
-		} else {
-			m.Delivered = time.Now()
-			m.Error = false
-		}
-		out <- m
+		go waitResult(token, m, out)
+		time.Sleep(c.WaitTimeout)
 	}
 }
