@@ -140,7 +140,7 @@ func main() {
 	totals.ConnRatio = float64(len(pubClients)) / float64(*clients)
 	totals.ConnPerSec = float64(len(pubClients)) / (lastConnAt.Sub(start).Seconds())
 	totals.AvgConnTime = float64(lastConnAt.Sub(start).Milliseconds()) / float64(len(pubClients))
-	fmt.Printf(">>>>>>%v clients start pub...", len(pubClients))
+	fmt.Printf(">>>>>>%v clients start pub...\n", len(pubClients))
 	//开始发送消息
 	start = time.Now()
 	resCh := make(chan *RunResults, len(pubClients))

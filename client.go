@@ -54,7 +54,6 @@ func (c *Client) Conn(result chan ConnResult) {
 	if ok {
 		c.client = client
 		r.ConnAt = time.Now()
-		fmt.Printf("client %v conn\n", c.ID)
 	} else {
 		fmt.Printf("client %v fail to conn\n", c.ID)
 	}
