@@ -45,7 +45,8 @@ func (c *Client) Conn(result chan ConnResult) {
 		opts.SetTLSConfig(c.TLSConfig)
 	}
 	client := mqtt.NewClient(opts)
-	ok := client.Connect().Wait()
+	token := client.Connect()
+	ok := token.Wait() && token.Error() == nil
 	r := ConnResult{
 		Client: c,
 		OK:     ok,
