@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"strconv"
 	"time"
 
@@ -123,6 +124,7 @@ func main() {
 			TLSConfig:   tlsConfig,
 		}
 		go c.Conn(connResultChn)
+		time.Sleep(time.Duration(rand.Int31n(2)+1) * time.Millisecond)
 	}
 	pubClients := make([]*Client, 0)
 	times := make([]float64, 0)

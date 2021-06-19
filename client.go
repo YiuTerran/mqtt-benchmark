@@ -35,8 +35,7 @@ func (c *Client) Conn(result chan ConnResult) {
 		AddBroker(c.BrokerURL).
 		SetClientID(fmt.Sprintf("%s-%v", c.ClientID, c.ID)).
 		SetCleanSession(true).
-		SetAutoReconnect(false).
-		SetConnectTimeout(5 * time.Second)
+		SetAutoReconnect(false)
 	if c.BrokerUser != "" || c.BrokerPass != "" {
 		opts.SetUsername(c.BrokerUser)
 		opts.SetPassword(c.BrokerPass)
