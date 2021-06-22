@@ -20,38 +20,36 @@ Usage of ./mqtt-benchmark:
     	Path to client certificate in PEM format
   -client-key string
     	Path to private clientKey in PEM format
-  -client-prefix string
-    	MQTT client id prefix (suffixed with '-<client-num>' (default "mqtt-benchmark")
   -clients int
     	Number of clients to start (default 10)
   -count int
     	Number of messages to send per client (default 100)
-  -format string
-    	Output format: text|json (default "text")
-  -password string
-    	MQTT client password (empty if auth disabled)
-  -qos int
-    	QoS for published messages (default 1)
-  -quiet
-    	Suppress logs while running
-  -size int
-    	Size of the messages payload (bytes) (default 100)
-  -topic string
-    	MQTT topic for outgoing messages (default "/test")
+  -conn-wait
+        Connect interval in milliseconds (default 0)
   -username string
     	MQTT client username (empty if auth disabled)
+  -password string
+    	MQTT client password (empty if auth disabled)
+  -client-prefix string
+    	MQTT client id prefix (suffixed with '-<client-num>' (default "mqtt-benchmark")
+  -payload string
+        Content you want to publish. "${createTs}" in payload will be replace by sending timestamp (in ms), "${randn}" will be replaced by random n-size string.
+  -qos int
+    	QoS for published messages (default 1)
+  -topic string
+    	MQTT topic for outgoing messages (default "/test")
   -wait int
-    	QoS 1 wait timeout in milliseconds (default 60000)
+    	Publish interval in milliseconds (default 60000)
+  -file string
+        File path. File with a json array, line example: 
+        [{"username": "", "password":"", "clientId":"", "qos":0, "payload":"", "count": 1, "wait": 300, "topic":""}]
+        These config overwrite the same key above from command line.
 ```
-
-> NOTE: if `count=1` or `clients=1`, the sample standard deviation will be returned as `0` (convention due to the [lack of NaN support in JSON](https://tools.ietf.org/html/rfc4627#section-2.4))
-
-Two output formats supported: human-readable plain text and JSON.
 
 Example use and output:
 
 ```sh
-> mqtt-benchmark --broker tcp://broker.local:1883 --count 100 --size 100 --clients 100 --qos 2 --format text
+> mqtt-benchmark --broker tcp://broker.local:1883 -count 100 -clients 100 -qos 2 -payload "hello, world"
 ....
 
 ======= CLIENT 27 =======
@@ -77,34 +75,14 @@ Total Bandwidth (msg/sec):   676.112
 
 Similarly, in JSON:
 
+```sh
+> mqtt-benchmark -broker tcp://broker.local:1883 -f
+```
+Content in `config.txt`:
+
 ```json
-> mqtt-benchmark --broker tcp://broker.local:1883 --count 100 --size 100 --clients 100 --qos 2 --format json --quiet
-{
-    runs: [
-        ...
-        {
-            "id": 61,
-            "successes": 100,
-            "failures": 0,
-            "run_time": 16.142762197,
-            "msg_tim_min": 12.798859,
-            "msg_time_max": 1273.9553740000001,
-            "msg_time_mean": 147.66799521,
-            "msg_time_std": 152.08244221156286,
-            "msgs_per_sec": 6.194726700402251
-        }
-    ],
-    "totals": {
-        "successes": 10000,
-        "failures": 0,
-        "total_run_time": 16.153741746,
-        "avg_run_time": 15.14702422494,
-        "msg_time_min": 7.852086000000001,
-        "msg_time_max": 1285.241845,
-        "msg_time_mean_avg": 136.4360292677,
-        "msg_time_mean_std": 12.816965054355633,
-        "total_msgs_per_sec": 681.0374046459865,
-        "avg_msgs_per_sec": 6.810374046459865
-    }
-}
+[
+  {"username": "1", "password":"123456", "clientId":"client-1", "qos":0, "payload":{"createTs": "${createTs}", "data": "123456"}, "count": 1000, "wait": 300},
+  {"username": "1", "password":"123456", "clientId":"client-2", "qos":1, "payload":{"createTs": "${createTs}", "data": "${rand1024}"}, "count": 1000, "wait": 300}
+]
 ```

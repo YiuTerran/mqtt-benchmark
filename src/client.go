@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
+	"math/rand"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/GaryBoone/GoStats/stats"
@@ -13,16 +15,15 @@ import (
 // Client implements an MQTT client running benchmark test
 type Client struct {
 	ID          int
-	ClientID    string
+	ClientID    string `json:"clientId"`
 	BrokerURL   string
-	BrokerUser  string
-	BrokerPass  string
-	MsgTopic    string
-	MsgSize     int
-	MsgCount    int
-	MsgQoS      byte
-	Quiet       bool
-	WaitTimeout time.Duration
+	BrokerUser  string `json:"username"`
+	BrokerPass  string `json:"password"`
+	MsgTopic    string `json:"topic"`
+	Payload     string `json:"payload"`
+	MsgCount    int    `json:"count"`
+	MsgQoS      byte   `json:"qos"`
+	WaitTimeout int    `json:"wait"`
 	TLSConfig   *tls.Config
 
 	client mqtt.Client
@@ -33,7 +34,7 @@ func (c *Client) Conn(result chan ConnResult) {
 	opts := mqtt.NewClientOptions().
 		SetProtocolVersion(4).
 		AddBroker(c.BrokerURL).
-		SetClientID(fmt.Sprintf("%s-%v", c.ClientID, c.ID)).
+		SetClientID(c.ClientID).
 		SetCleanSession(true).
 		SetAutoReconnect(false)
 	if c.BrokerUser != "" || c.BrokerPass != "" {
@@ -98,18 +99,39 @@ func (c *Client) Run(res chan *RunResults) {
 	}
 }
 
-type payload struct {
-	CreateAt int64  `json:"create_at"`
-	Data     []byte `json:"data"`
+var letters = []rune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func randSeq(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
 }
 
-func genPayload() []byte {
-	p := payload{
-		CreateAt: time.Now().UnixNano() / 1e6,
-		Data:     make([]byte, 1024),
+func (c *Client) fillPayload() []byte {
+	if !strings.Contains(c.Payload, "${") {
+		return []byte(c.Payload)
 	}
-	bs, _ := json.Marshal(p)
-	return bs
+	var resp string
+	//替换时间
+	if strings.Contains(c.Payload, "${createTs}") {
+		resp = strings.ReplaceAll(c.Payload, "${createTs}", fmt.Sprint(time.Now().UnixNano()/1e6))
+	}
+	//随机字符串
+	for i := strings.Index(resp, "${rand"); i >= 0; {
+		j := i + 6
+		count := make([]byte, 0)
+		for ; j < len(resp) && resp[j] != '}'; j++ {
+			count = append(count, resp[j])
+		}
+		if c, e := strconv.Atoi(string(count)); e != nil {
+			fmt.Printf("fail to gen rand string, count is %s", string(count))
+		} else {
+			resp = strings.ReplaceAll(resp, "${rand"+string(count)+"}", randSeq(c))
+		}
+	}
+	return []byte(resp)
 }
 
 func (c *Client) genMessages(ch chan *Message) {
@@ -117,7 +139,7 @@ func (c *Client) genMessages(ch chan *Message) {
 		ch <- &Message{
 			Topic:   c.MsgTopic,
 			QoS:     c.MsgQoS,
-			Payload: genPayload(),
+			Payload: c.fillPayload(),
 		}
 	}
 	//nil表示生成完毕
@@ -143,6 +165,6 @@ func (c *Client) pubMessages(in, out chan *Message) {
 		m.Sent = time.Now()
 		token := c.client.Publish(m.Topic, m.QoS, false, m.Payload)
 		go waitResult(token, m, out)
-		time.Sleep(c.WaitTimeout)
+		time.Sleep(time.Duration(c.WaitTimeout) * time.Millisecond)
 	}
 }

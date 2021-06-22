@@ -1,13 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
-	"math/rand"
+	"os"
 	"strconv"
 	"time"
 
@@ -70,16 +70,20 @@ type ConnResult struct {
 
 func main() {
 	var (
-		broker       = flag.String("broker", "tcp://localhost:1883", "MQTT broker endpoint as scheme://host:port")
-		topic        = flag.String("topic", "/test", "MQTT topic for outgoing messages")
-		username     = flag.String("username", "", "MQTT client username (empty if auth disabled)")
-		password     = flag.String("password", "", "MQTT client password (empty if auth disabled)")
-		qos          = flag.Int("qos", 1, "QoS for published messages")
-		wait         = flag.Int("wait", 60000, "QoS 1 wait timeout in milliseconds")
-		count        = flag.Int("count", 100, "Number of messages to send per client")
-		clients      = flag.Int("clients", 10, "Number of clients to start")
-		format       = flag.String("format", "text", "Output format: text|json")
-		quiet        = flag.Bool("quiet", false, "Suppress logs while running")
+		broker   = flag.String("broker", "tcp://localhost:1883", "MQTT broker endpoint as scheme://host:port")
+		topic    = flag.String("topic", "/test", "MQTT topic for outgoing messages")
+		username = flag.String("username", "", "MQTT client username (empty if auth disabled)")
+		connWait = flag.Int("conn-wait", 0, "Connect interval in milliseconds (default 0)")
+		password = flag.String("password", "", "MQTT client password (empty if auth disabled)")
+		qos      = flag.Int("qos", 1, "QoS for published messages")
+		wait     = flag.Int("wait", 60000, "QoS 1 wait timeout in milliseconds")
+		count    = flag.Int("count", 100, "Number of messages to send per client")
+		clients  = flag.Int("clients", 10, "Number of clients to start")
+		payload  = flag.String("payload", "hello world", `Content you want to publish. "${createTs}" in payload will be replace by sending timestamp (in ms), "${randn}" will be replaced by random n-size string.
+`)
+		file     = flag.String("file", "", `File path. File with a json array, line example: 
+        [{"username": "", "password":"", "clientId":"", "qos":0, "payload":"", "count": 1, "wait": 300, "topic":""}]
+        These config overwrite the same key above from command line.`)
 		clientPrefix = flag.String("client-prefix", "mqtt-benchmark", "MQTT client id prefix (suffixed with '-<client-num>'")
 		clientCert   = flag.String("client-cert", "", "Path to client certificate in PEM format")
 		clientKey    = flag.String("client-key", "", "Path to private clientKey in PEM format")
@@ -87,45 +91,97 @@ func main() {
 
 	flag.Parse()
 	if *clients < 1 {
-		log.Fatalf("Invalid arguments: number of clients should be > 1, given: %v", *clients)
+		*clients = 1
 	}
-
 	if *count < 1 {
-		log.Fatalf("Invalid arguments: messages count should be > 1, given: %v", *count)
+		*count = 1
 	}
-
 	if *clientCert != "" && *clientKey == "" {
 		log.Fatal("Invalid arguments: private clientKey path missing")
 	}
-
 	if *clientCert == "" && *clientKey != "" {
 		log.Fatalf("Invalid arguments: certificate path missing")
 	}
-
 	var tlsConfig *tls.Config
 	if *clientCert != "" && *clientKey != "" {
 		tlsConfig = generateTLSConfig(*clientCert, *clientKey)
 	}
+	var (
+		config *os.File
+		err    error
+	)
+	if file != nil && *file != "" {
+		config, err = os.Open(*file)
+		if err != nil {
+			log.Fatalf("fail to open %s", config)
+		}
+		defer config.Close()
+	}
 	start := time.Now()
 	connResultChn := make(chan ConnResult, *clients)
-	totals := &TotalResults{}
-	for i := 0; i < *clients; i++ {
-		c := &Client{
-			ID:          i,
-			ClientID:    *clientPrefix,
-			BrokerURL:   *broker,
-			BrokerUser:  *username + strconv.Itoa(i+2),
-			BrokerPass:  *password,
-			MsgTopic:    *topic,
-			MsgCount:    *count,
-			MsgQoS:      byte(*qos),
-			Quiet:       *quiet,
-			WaitTimeout: time.Duration(*wait) * time.Millisecond,
-			TLSConfig:   tlsConfig,
+	//从文件中读取配置，字段不存在的就用通用配置
+	if config != nil {
+		bs, err := ioutil.ReadAll(config)
+		if err != nil {
+			log.Fatalf("fail to read json file:%s", err)
 		}
-		go c.Conn(connResultChn)
-		time.Sleep(time.Duration(rand.Int31n(2)+1) * time.Millisecond)
+		var cs []*Client
+		if err = json.Unmarshal(bs, &cs); err != nil {
+			log.Fatalf("fail to parse json file:%s", err)
+		}
+		for i, c := range cs {
+			c.BrokerURL = *broker
+			if c.BrokerUser == "" {
+				c.BrokerUser = *username
+			}
+			if c.BrokerPass == "" {
+				c.BrokerPass = *password
+			}
+			if c.MsgTopic == "" {
+				c.MsgTopic = *topic
+			}
+			if c.Payload == "" {
+				c.Payload = *payload
+			}
+			if c.MsgCount == 0 {
+				c.MsgCount = *count
+			}
+			if c.WaitTimeout == 0 {
+				c.WaitTimeout = *wait
+			}
+			if c.ClientID == "" {
+				c.ClientID = fmt.Sprintf("%s-%d", *clientPrefix, i)
+			}
+			c.TLSConfig = tlsConfig
+			go c.Conn(connResultChn)
+			if *connWait > 0 {
+				time.Sleep(time.Duration(*connWait) * time.Millisecond)
+			}
+		}
+	} else {
+		//根据通用配置创建文件
+		for i := 0; i < *clients; i++ {
+			c := &Client{
+				ID:          i,
+				ClientID:    fmt.Sprintf("%s-%d", *clientPrefix, i),
+				BrokerURL:   *broker,
+				BrokerUser:  *username + strconv.Itoa(i+2),
+				BrokerPass:  *password,
+				MsgTopic:    *topic,
+				MsgCount:    *count,
+				MsgQoS:      byte(*qos),
+				WaitTimeout: *wait,
+				Payload:     *payload,
+				TLSConfig:   tlsConfig,
+			}
+			go c.Conn(connResultChn)
+			if *connWait > 0 {
+				time.Sleep(time.Duration(*connWait) * time.Millisecond)
+			}
+		}
 	}
+	//等待连接结果
+	totals := &TotalResults{}
 	pubClients := make([]*Client, 0)
 	times := make([]float64, 0)
 	var lastConnAt time.Time
@@ -139,6 +195,7 @@ func main() {
 			times = append(times, float64(result.ConnAt.Sub(start).Milliseconds()))
 		}
 	}
+	//统计连接相关数据
 	totals.ConnRatio = float64(len(pubClients)) / float64(*clients)
 	totals.ConnPerSec = float64(len(pubClients)) / (lastConnAt.Sub(start).Seconds())
 	totals.AvgConnTime = float64(lastConnAt.Sub(start).Milliseconds()) / float64(len(pubClients))
@@ -149,7 +206,7 @@ func main() {
 	for _, c := range pubClients {
 		go c.Run(resCh)
 	}
-	// collect the results
+	//统计发送结果
 	results := make([]*RunResults, 0, len(pubClients))
 	for i := 0; i < len(pubClients); i++ {
 		r := <-resCh
@@ -157,8 +214,8 @@ func main() {
 	}
 	totals.TotalRunTime = time.Now().Sub(start).Seconds()
 	calculateTotalResults(results, totals)
-	// print stats
-	printResults(results, totals, *format)
+	//打印结果
+	printResults(results, totals)
 }
 
 func calculateTotalResults(results []*RunResults, totals *TotalResults) {
@@ -192,34 +249,19 @@ func calculateTotalResults(results []*RunResults, totals *TotalResults) {
 	totals.MsgTimeMeanAvg = stats.StatsMean(msgTimeMeans)
 }
 
-func printResults(results []*RunResults, totals *TotalResults, format string) {
-	switch format {
-	case "json":
-		jr := JSONResults{
-			Totals: totals,
-		}
-		data, err := json.Marshal(jr)
-		if err != nil {
-			log.Fatalf("Error marshalling results: %v", err)
-		}
-		var out bytes.Buffer
-		_ = json.Indent(&out, data, "", "\t")
-		fmt.Println(string(out.Bytes()))
-	default:
-		fmt.Printf("========= TOTAL (%d) =========\n", len(results))
-		fmt.Printf("Connect Ratio:				%.3f\n", totals.ConnRatio)
-		fmt.Printf("Average Connect Time (ms):	%.3f\n", totals.AvgConnTime)
-		fmt.Printf("Connect Speed(conn/sec)		%.3f\n", totals.ConnPerSec)
-		fmt.Printf("Total Ratio:                 %.3f (%d/%d)\n", totals.Ratio, totals.Successes, totals.Successes+totals.Failures)
-		fmt.Printf("Total Runtime (sec):         %.3f\n", totals.TotalRunTime)
-		fmt.Printf("Average Runtime (sec):       %.3f\n", totals.AvgRunTime)
-		fmt.Printf("Msg time min (ms):           %.3f\n", totals.MsgTimeMin)
-		fmt.Printf("Msg time max (ms):           %.3f\n", totals.MsgTimeMax)
-		fmt.Printf("Msg time mean mean (ms):     %.3f\n", totals.MsgTimeMeanAvg)
-		fmt.Printf("Average Bandwidth (msg/sec): %.3f\n", totals.AvgMsgsPerSec)
-		fmt.Printf("Total Bandwidth (msg/sec):   %.3f\n", totals.TotalMsgsPerSec)
-	}
-	return
+func printResults(results []*RunResults, totals *TotalResults) {
+	fmt.Printf("========= TOTAL (%d) =========\n", len(results))
+	fmt.Printf("Connect Ratio:				%.3f\n", totals.ConnRatio)
+	fmt.Printf("Average Connect Time (ms):	%.3f\n", totals.AvgConnTime)
+	fmt.Printf("Connect Speed(conn/sec)		%.3f\n", totals.ConnPerSec)
+	fmt.Printf("Total Ratio:                 %.3f (%d/%d)\n", totals.Ratio, totals.Successes, totals.Successes+totals.Failures)
+	fmt.Printf("Total Runtime (sec):         %.3f\n", totals.TotalRunTime)
+	fmt.Printf("Average Runtime (sec):       %.3f\n", totals.AvgRunTime)
+	fmt.Printf("Msg time min (ms):           %.3f\n", totals.MsgTimeMin)
+	fmt.Printf("Msg time max (ms):           %.3f\n", totals.MsgTimeMax)
+	fmt.Printf("Msg time mean mean (ms):     %.3f\n", totals.MsgTimeMeanAvg)
+	fmt.Printf("Average Bandwidth (msg/sec): %.3f\n", totals.AvgMsgsPerSec)
+	fmt.Printf("Total Bandwidth (msg/sec):   %.3f\n", totals.TotalMsgsPerSec)
 }
 
 func generateTLSConfig(certFile string, keyFile string) *tls.Config {
