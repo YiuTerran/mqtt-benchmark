@@ -39,7 +39,7 @@ Usage of ./mqtt-benchmark:
   -topic string
     	MQTT topic for outgoing messages (default "/test")
   -wait int
-    	Publish interval in milliseconds (default 60000)
+    	Publish interval in milliseconds (default 5000)
   -file string
         File path. File with a json array, line example: 
         [{"username": "", "password":"", "clientId":"", "qos":0, "payload":"", "count": 1, "wait": 300, "topic":""}]

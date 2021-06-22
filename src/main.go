@@ -73,18 +73,18 @@ func main() {
 		broker   = flag.String("broker", "tcp://localhost:1883", "MQTT broker endpoint as scheme://host:port")
 		topic    = flag.String("topic", "/test", "MQTT topic for outgoing messages")
 		username = flag.String("username", "", "MQTT client username (empty if auth disabled)")
-		connWait = flag.Int("conn-wait", 0, "Connect interval in milliseconds (default 0)")
+		connWait = flag.Int("conn-wait", 0, "Connect interval in milliseconds")
 		password = flag.String("password", "", "MQTT client password (empty if auth disabled)")
 		qos      = flag.Int("qos", 1, "QoS for published messages")
-		wait     = flag.Int("wait", 60000, "QoS 1 wait timeout in milliseconds")
+		wait     = flag.Int("wait", 5000, "QoS 1 wait timeout in milliseconds")
 		count    = flag.Int("count", 100, "Number of messages to send per client")
 		clients  = flag.Int("clients", 10, "Number of clients to start")
-		payload  = flag.String("payload", "hello world", `Content you want to publish. "${createTs}" in payload will be replace by sending timestamp (in ms), "${randn}" will be replaced by random n-size string.
-`)
-		payloadFormat = flag.String("payload-format", "jo", `jo(json object), ja(json array), or txt(default jo)`)
-		file          = flag.String("file", "", `File path. File with a json array, line example: 
-        [{"username": "", "password":"", "clientId":"", "qos":0, "payload":"", "count": 1, "wait": 300, "topic":""}]
-        These config overwrite the same key above from command line.`)
+		payload  = flag.String("payload", "${createTs}", `Content you want to publish. 
+	"${createTs}" in payload will be replace by sending timestamp (in ms), 
+	"${randn}" will be replaced by random n-size string.`)
+		file = flag.String("file", "", `Json config file path. File with a json array, line example: 
+	[{"username": "", "password":"", "clientId":"", "qos":0, "payload":"", "count": 1, "wait": 300, "topic":""}]
+	These config overwrite the same key above from command line.`)
 		clientPrefix = flag.String("client-prefix", "mqtt-benchmark", "MQTT client id prefix (suffixed with '-<client-num>'")
 		clientCert   = flag.String("client-cert", "", "Path to client certificate in PEM format")
 		clientKey    = flag.String("client-key", "", "Path to private clientKey in PEM format")
@@ -102,9 +102,6 @@ func main() {
 	}
 	if *clientCert == "" && *clientKey != "" {
 		log.Fatalf("Invalid arguments: certificate path missing")
-	}
-	if *payloadFormat != "ja" && *payloadFormat != "jo" && *payloadFormat != "txt" {
-		log.Fatalf("Unknown payload format")
 	}
 	var tlsConfig *tls.Config
 	if *clientCert != "" && *clientKey != "" {
@@ -145,11 +142,8 @@ func main() {
 				c.MsgTopic = *topic
 			}
 			if c.Payload == nil {
-				switch *payloadFormat {
-				case "txt":
+				if err := json.Unmarshal([]byte(*payload), &c.Payload); err != nil {
 					c.Payload = *payload
-				default:
-					_ = json.Unmarshal([]byte(*payload), &c.Payload)
 				}
 			}
 			if c.MsgCount == 0 {
@@ -167,6 +161,7 @@ func main() {
 				time.Sleep(time.Duration(*connWait) * time.Millisecond)
 			}
 		}
+		*clients = len(cs)
 	} else {
 		//根据通用配置创建文件
 		for i := 0; i < *clients; i++ {
