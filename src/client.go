@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -17,13 +18,13 @@ type Client struct {
 	ID          int
 	ClientID    string `json:"clientId"`
 	BrokerURL   string
-	BrokerUser  string `json:"username"`
-	BrokerPass  string `json:"password"`
-	MsgTopic    string `json:"topic"`
-	Payload     string `json:"payload"`
-	MsgCount    int    `json:"count"`
-	MsgQoS      byte   `json:"qos"`
-	WaitTimeout int    `json:"wait"`
+	BrokerUser  string      `json:"username"`
+	BrokerPass  string      `json:"password"`
+	MsgTopic    string      `json:"topic"`
+	Payload     interface{} `json:"payload"`
+	MsgCount    int         `json:"count"`
+	MsgQoS      byte        `json:"qos"`
+	WaitTimeout int         `json:"wait"`
 	TLSConfig   *tls.Config
 
 	client mqtt.Client
@@ -109,29 +110,78 @@ func randSeq(n int) string {
 	return string(b)
 }
 
-func (c *Client) fillPayload() []byte {
-	if !strings.Contains(c.Payload, "${") {
-		return []byte(c.Payload)
-	}
-	var resp string
+func replaceStr(payload string) string {
+	resp := payload
 	//替换时间
-	if strings.Contains(c.Payload, "${createTs}") {
-		resp = strings.ReplaceAll(c.Payload, "${createTs}", fmt.Sprint(time.Now().UnixNano()/1e6))
+	if strings.Contains(resp, "${createTs}") {
+		resp = strings.ReplaceAll(resp, "${createTs}", fmt.Sprint(time.Now().UnixNano()/1e6))
 	}
 	//随机字符串
-	for i := strings.Index(resp, "${rand"); i >= 0; {
+	for {
+		i := strings.Index(resp, "${rand")
+		if i < 0 {
+			break
+		}
 		j := i + 6
 		count := make([]byte, 0)
 		for ; j < len(resp) && resp[j] != '}'; j++ {
 			count = append(count, resp[j])
 		}
+		key := "${rand" + string(count) + "}"
 		if c, e := strconv.Atoi(string(count)); e != nil {
 			fmt.Printf("fail to gen rand string, count is %s", string(count))
+			strings.ReplaceAll(resp, key, "")
 		} else {
-			resp = strings.ReplaceAll(resp, "${rand"+string(count)+"}", randSeq(c))
+			resp = strings.ReplaceAll(resp, key, randSeq(c))
 		}
 	}
-	return []byte(resp)
+
+	return resp
+}
+
+//递归替换
+func replaceObject(obj map[string]interface{}) map[string]interface{} {
+	for k, v := range obj {
+		switch v.(type) {
+		case string:
+			obj[k] = replaceStr(v.(string))
+		case map[string]interface{}:
+			obj[k] = replaceObject(v.(map[string]interface{}))
+		case []interface{}:
+			obj[k] = replaceArray(v.([]interface{}))
+		}
+	}
+	return obj
+}
+
+func replaceArray(cc []interface{}) []interface{} {
+	for i, k := range cc {
+		if v1, ok := k.(map[string]interface{}); ok {
+			cc[i] = replaceObject(v1)
+		} else if v2, ok := k.(string); ok {
+			cc[i] = replaceStr(v2)
+		} else if v3, ok := k.([]interface{}); ok {
+			cc[i] = replaceArray(v3)
+		}
+	}
+	return cc
+}
+
+func (c *Client) fillPayload() []byte {
+	payload := Copy(c.Payload)
+	switch payload.(type) {
+	case string:
+		return []byte(replaceStr(payload.(string)))
+	case map[string]interface{}:
+		obj := replaceObject(payload.(map[string]interface{}))
+		bs, _ := json.Marshal(obj)
+		return bs
+	case []interface{}:
+		obj := replaceArray(payload.([]interface{}))
+		bs, _ := json.Marshal(obj)
+		return bs
+	}
+	return []byte("")
 }
 
 func (c *Client) genMessages(ch chan *Message) {

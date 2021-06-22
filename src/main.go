@@ -81,7 +81,8 @@ func main() {
 		clients  = flag.Int("clients", 10, "Number of clients to start")
 		payload  = flag.String("payload", "hello world", `Content you want to publish. "${createTs}" in payload will be replace by sending timestamp (in ms), "${randn}" will be replaced by random n-size string.
 `)
-		file     = flag.String("file", "", `File path. File with a json array, line example: 
+		payloadFormat = flag.String("payload-format", "jo", `jo(json object), ja(json array), or txt(default jo)`)
+		file          = flag.String("file", "", `File path. File with a json array, line example: 
         [{"username": "", "password":"", "clientId":"", "qos":0, "payload":"", "count": 1, "wait": 300, "topic":""}]
         These config overwrite the same key above from command line.`)
 		clientPrefix = flag.String("client-prefix", "mqtt-benchmark", "MQTT client id prefix (suffixed with '-<client-num>'")
@@ -102,6 +103,9 @@ func main() {
 	if *clientCert == "" && *clientKey != "" {
 		log.Fatalf("Invalid arguments: certificate path missing")
 	}
+	if *payloadFormat != "ja" && *payloadFormat != "jo" && *payloadFormat != "txt" {
+		log.Fatalf("Unknown payload format")
+	}
 	var tlsConfig *tls.Config
 	if *clientCert != "" && *clientKey != "" {
 		tlsConfig = generateTLSConfig(*clientCert, *clientKey)
@@ -113,7 +117,7 @@ func main() {
 	if file != nil && *file != "" {
 		config, err = os.Open(*file)
 		if err != nil {
-			log.Fatalf("fail to open %s", config)
+			log.Fatalf("fail to open %s", *file)
 		}
 		defer config.Close()
 	}
@@ -140,8 +144,13 @@ func main() {
 			if c.MsgTopic == "" {
 				c.MsgTopic = *topic
 			}
-			if c.Payload == "" {
-				c.Payload = *payload
+			if c.Payload == nil {
+				switch *payloadFormat {
+				case "txt":
+					c.Payload = *payload
+				default:
+					_ = json.Unmarshal([]byte(*payload), &c.Payload)
+				}
 			}
 			if c.MsgCount == 0 {
 				c.MsgCount = *count
